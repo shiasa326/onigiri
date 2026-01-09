@@ -1,154 +1,228 @@
-<!DOCTYPE html>
-<html lang="ja">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>本日のおにぎり占い</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@400;700&display=swap" rel="stylesheet">
-    <style>
-        body {
-            font-family: 'Zen Maru Gothic', sans-serif;
-            background-color: #fff9f0;
-        }
-        .onigiri-card {
-            transition: transform 0.3s ease;
-        }
-        .onigiri-card:hover {
-            transform: translateY(-5px);
-        }
-        .shake {
-            animation: shake 0.5s cubic-bezier(.36,.07,.19,.97) both;
-        }
-        @keyframes shake {
-            10%, 90% { transform: translate3d(-1px, 0, 0); }
-            20%, 80% { transform: translate3d(2px, 0, 0); }
-            30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
-            40%, 60% { transform: translate3d(4px, 0, 0); }
-        }
-    </style>
-</head>
-<body class="min-h-screen flex items-center justify-center p-4">
+import React, { useState, useEffect } from 'react';
+import { Plus, Trash2, Loader2, Image as ImageIcon } from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, deleteDoc, doc } from 'firebase/firestore';
 
-    <div class="max-w-md w-full bg-white rounded-3xl shadow-xl overflow-hidden p-8 border-4 border-orange-100">
-        <div class="text-center">
-            <h1 class="text-3xl font-bold text-orange-600 mb-2">🍙 本日の具材占い</h1>
-            <p class="text-gray-500 text-sm mb-6">今日のおにぎり、何にする？</p>
+/**
+ * GitHub等で公開する場合の設定。
+ * import.meta を直接記述すると環境によってコンパイルエラーになるため、
+ * より安全なプロパティアクセスの方法に修正しました。
+ */
+const getFirebaseConfig = () => {
+  // Canvas環境用のグローバル変数を最優先
+  if (typeof __firebase_config !== 'undefined') {
+    return JSON.parse(__firebase_config);
+  }
 
-            <!-- Result Display Area -->
-            <div id="display-area" class="onigiri-card bg-orange-50 rounded-2xl p-10 mb-8 border-2 border-dashed border-orange-200">
-                <div id="onigiri-icon" class="text-7xl mb-4">🍙</div>
-                <div id="ingredient-name" class="text-2xl font-bold text-gray-800">？？？</div>
+  // GitHub / Vite環境用のフォールバック
+  // 実行環境のオブジェクトを安全に参照するための回避策
+  let env = {};
+  try {
+    // import.meta.env への直接参照を避けるための動的な取得試行
+    const meta = (new Function('return import.meta'))();
+    if (meta && meta.env) {
+      env = meta.env;
+    }
+  } catch (e) {
+    // エラー時は空のオブジェクトを使用
+  }
+  
+  return {
+    apiKey: env.VITE_FIREBASE_API_KEY || "",
+    authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || "",
+    projectId: env.VITE_FIREBASE_PROJECT_ID || "",
+    storageBucket: env.VITE_FIREBASE_STORAGE_BUCKET || "",
+    messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID || "",
+    appId: env.VITE_FIREBASE_APP_ID || ""
+  };
+};
+
+const firebaseConfig = getFirebaseConfig();
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const ARCHIVE_APP_ID = typeof __app_id !== 'undefined' ? __app_id : 'my-reference-archive';
+
+const PRIMARY_COLOR = '#1738CE';
+const BG_COLOR = '#191919';
+
+const App = () => {
+  const [user, setUser] = useState(null);
+  const [url, setUrl] = useState('');
+  const [references, setReferences] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
+
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        await signInAnonymously(auth);
+      } catch (error) {
+        console.error("Auth error:", error);
+      } finally {
+        setIsInitializing(false);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
+    if (!user) return;
+
+    const q = collection(db, 'artifacts', ARCHIVE_APP_ID, 'users', user.uid, 'references');
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const items = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+      setReferences(items.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)));
+    }, (error) => {
+      console.error("Firestore error:", error);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  const handleAdd = async (e) => {
+    e.preventDefault();
+    if (!url || !user) return;
+    
+    let targetUrl = url.trim();
+    if (!targetUrl.startsWith('http')) {
+      targetUrl = 'https://' + targetUrl;
+    }
+
+    setLoading(true);
+
+    try {
+      const domain = new URL(targetUrl).hostname;
+      const iconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
+
+      await addDoc(collection(db, 'artifacts', ARCHIVE_APP_ID, 'users', user.uid, 'references'), {
+        url: targetUrl,
+        icon: iconUrl,
+        domain: domain,
+        createdAt: Date.now()
+      });
+      setUrl('');
+    } catch (error) {
+      console.error("Add error:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deleteItem = async (e, id) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!user) return;
+    await deleteDoc(doc(db, 'artifacts', ARCHIVE_APP_ID, 'users', user.uid, 'references', id));
+  };
+
+  if (isInitializing) {
+    return (
+      <div className="flex h-screen items-center justify-center" style={{ backgroundColor: BG_COLOR }}>
+        <Loader2 className="animate-spin" style={{ color: PRIMARY_COLOR }} size={24} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen text-slate-100 font-sans selection:bg-[#1738CE] selection:text-white" style={{ backgroundColor: BG_COLOR }}>
+      <header className="fixed top-0 left-0 w-full z-50 bg-[#191919]/80 backdrop-blur-xl border-b border-white/5">
+        <div className="max-w-[1200px] mx-auto px-6 h-14 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="w-5 h-5 rounded-full flex items-center justify-center" style={{ backgroundColor: PRIMARY_COLOR }}>
+              <div className="w-1.5 h-1.5 bg-white rounded-full" />
             </div>
+            <span className="font-black tracking-tighter text-xs text-white uppercase italic">Archive.lib</span>
+          </div>
 
-            <button onclick="pickIngredient()" id="pick-btn" class="w-full bg-orange-500 hover:bg-orange-600 text-white font-bold py-4 rounded-xl shadow-lg transition duration-200 text-lg">
-                具材を決める！
+          <form onSubmit={handleAdd} className="flex-grow max-w-sm mx-4 relative">
+            <input
+              type="text"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="Paste URL..."
+              className="w-full bg-white/5 border border-white/5 rounded-full py-1.5 px-4 focus:ring-1 focus:ring-[#1738CE]/50 transition-all outline-none text-[11px] text-white placeholder:text-white/20"
+              required
+            />
+            <button
+              type="submit"
+              disabled={loading}
+              className="absolute right-1 top-1 bottom-1 px-3 rounded-full text-white transition-all disabled:opacity-50"
+              style={{ backgroundColor: PRIMARY_COLOR }}
+            >
+              {loading ? <Loader2 className="animate-spin" size={12} /> : <Plus size={14} />}
             </button>
-
-            <div class="mt-8 pt-6 border-t border-gray-100">
-                <details class="text-left">
-                    <summary class="text-gray-400 text-sm cursor-pointer hover:text-orange-400 transition">具材リストを編集する</summary>
-                    <div class="mt-4">
-                        <div class="flex gap-2 mb-4">
-                            <input type="text" id="new-ingredient" placeholder="新しい具材..." class="flex-1 border rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300">
-                            <button onclick="addIngredient()" class="bg-gray-800 text-white px-4 py-2 rounded-lg text-sm font-bold">追加</button>
-                        </div>
-                        <ul id="ingredient-list" class="text-sm text-gray-600 space-y-1 max-h-40 overflow-y-auto">
-                            <!-- List items will be injected here -->
-                        </ul>
-                    </div>
-                </details>
-            </div>
+          </form>
+          
+          <div className="text-[9px] text-white/30 font-mono tracking-tighter uppercase hidden sm:block">
+            Collection: {references.length.toString().padStart(3, '0')}
+          </div>
         </div>
+      </header>
+
+      <main className="max-w-[1200px] mx-auto px-6 pt-24 pb-10">
+        <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-4">
+          {references.map((item) => (
+            <div key={item.id} className="relative group aspect-square">
+              <a
+                href={item.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="w-full h-full flex items-center justify-center bg-white/[0.02] rounded-xl border border-white/5 transition-all duration-300 hover:bg-white/[0.05] hover:border-[#1738CE]/30 hover:-translate-y-1 shadow-2xl shadow-black/40"
+              >
+                <img
+                  src={item.icon}
+                  alt=""
+                  className="w-8 h-8 object-contain opacity-40 group-hover:opacity-100 transition-all duration-500 group-hover:scale-110"
+                  onError={(e) => {
+                    e.target.style.display = 'none';
+                    const nextEl = e.target.nextSibling;
+                    if (nextEl) nextEl.style.display = 'block';
+                  }}
+                />
+                <div className="hidden text-white/10 group-hover:text-white/30 transition-colors">
+                  <ImageIcon size={20} />
+                </div>
+              </a>
+              
+              <button
+                onClick={(e) => deleteItem(e, item.id)}
+                className="absolute -top-1 -right-1 p-1.5 bg-[#191919] border border-white/10 text-white/20 hover:text-red-500 rounded-full opacity-0 group-hover:opacity-100 transition-all scale-75 group-hover:scale-100 shadow-xl z-10"
+              >
+                <Trash2 size={10} />
+              </button>
+
+              <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 px-2 py-1 bg-black/80 backdrop-blur rounded text-[8px] font-mono text-white/40 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none uppercase tracking-tighter z-20">
+                {item.domain?.replace('www.', '')}
+              </div>
+            </div>
+          ))}
+
+          {loading && (
+            <div className="aspect-square rounded-xl bg-white/[0.01] border border-dashed border-white/5 animate-pulse flex items-center justify-center">
+              <Loader2 className="animate-spin text-white/5" size={14} />
+            </div>
+          )}
+        </div>
+
+        {references.length === 0 && !loading && (
+          <div className="flex flex-col items-center justify-center py-40 gap-3">
+            <div className="w-8 h-8 border border-dashed border-white/5 rounded-full flex items-center justify-center">
+               <Plus className="text-white/5" size={14} />
+            </div>
+            <p className="text-white/10 text-[8px] tracking-[0.4em] uppercase font-light font-mono">Archive Empty</p>
+          </div>
+        )}
+      </main>
     </div>
+  );
+};
 
-    <script>
-        // Default ingredients with their corresponding emojis
-        let ingredients = [
-            { name: "鮭（しゃけ）", icon: "🐟" },
-            { name: "梅干し", icon: "🔴" },
-            { name: "昆布", icon: "🌿" },
-            { name: "ツナマヨ", icon: "🐟" },
-            { name: "明太子", icon: "🌶️" },
-            { name: "おかか", icon: "🐈" },
-            { name: "高菜", icon: "🥬" },
-            { name: "天むす", icon: "🍤" },
-            { name: "焼きたらこ", icon: "🔥" },
-            { name: "いくら", icon: "✨" },
-            { name: "塩むすび", icon: "🧂" },
-            { name: "肉味噌", icon: "🍖" }
-        ];
-
-        function init() {
-            // Load from localStorage if exists
-            const saved = localStorage.getItem('my_onigiri_list');
-            if (saved) {
-                ingredients = JSON.parse(saved);
-            }
-            renderList();
-            
-            // Auto-pick on load
-            setTimeout(pickIngredient, 500);
-        }
-
-        function pickIngredient() {
-            const displayArea = document.getElementById('display-area');
-            const iconEl = document.getElementById('onigiri-icon');
-            const nameEl = document.getElementById('ingredient-name');
-            const btn = document.getElementById('pick-btn');
-
-            // Animation
-            displayArea.classList.add('shake');
-            btn.disabled = true;
-            nameEl.innerText = "考え中...";
-            iconEl.innerText = "🍙";
-
-            setTimeout(() => {
-                const result = ingredients[Math.floor(Math.random() * ingredients.length)];
-                
-                iconEl.innerText = result.icon || "🍙";
-                nameEl.innerText = result.name;
-                
-                displayArea.classList.remove('shake');
-                btn.disabled = false;
-            }, 600);
-        }
-
-        function addIngredient() {
-            const input = document.getElementById('new-ingredient');
-            const val = input.value.trim();
-            if (val) {
-                ingredients.push({ name: val, icon: "🍱" });
-                input.value = "";
-                saveAndRender();
-            }
-        }
-
-        function removeIngredient(index) {
-            if (ingredients.length > 1) {
-                ingredients.splice(index, 1);
-                saveAndRender();
-            } else {
-                alert("具材がなくなっちゃいます！");
-            }
-        }
-
-        function saveAndRender() {
-            localStorage.setItem('my_onigiri_list', JSON.stringify(ingredients));
-            renderList();
-        }
-
-        function renderList() {
-            const listEl = document.getElementById('ingredient-list');
-            listEl.innerHTML = ingredients.map((ing, index) => `
-                <li class="flex justify-between items-center bg-gray-50 p-2 rounded">
-                    <span>${ing.icon || '🍙'} ${ing.name}</span>
-                    <button onclick="removeIngredient(${index})" class="text-red-400 hover:text-red-600 px-2">×</button>
-                </li>
-            `).join('');
-        }
-
-        window.onload = init;
-    </script>
-</body>
-</html>
+export default App;
